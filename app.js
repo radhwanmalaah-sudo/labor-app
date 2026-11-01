@@ -111,7 +111,7 @@ const view = $('#view');
 function setTab(t) { S.tab = t; document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); render(); }
 async function render() {
   view.innerHTML = '<div class="empty">جارٍ التحميل…</div>';
-  try { await ({ home: vHome, att: vAtt, assign: vAssign, data: vData, rep: vRep })[S.tab](); }
+  try { await ({ home: vHome, att: vAtt, assign: vAssign, data: vData, rep: vRep, settings: vSettings })[S.tab](); }
   catch (e) { view.innerHTML = `<div class="card warn">${esc(e.message)}</div>`; }
 }
 function openSheet(h) { $('#sheet').innerHTML = h; $('#sheetWrap').classList.add('on'); }
@@ -242,7 +242,20 @@ function wSheet(id) {
   <label>الأجر اليومي</label><input id="f_wage" type="number" inputmode="decimal" min="0" value="${esc(w.daily_wage)}">
   <label>الهاتف</label><input id="f_phone" type="tel" value="${esc(w.phone)}" maxlength="30">
   ${id ? `<label class="row" style="color:var(--tx);font-size:16px"><span>فعّال</span><input type="checkbox" id="f_act" ${w.active ? 'checked' : ''}></label>` : ''}
-  <div class="row" style="margin-top:16px"><button class="btn grow" onclick="saveW(${id})">حفظ</button><button class="btn sec grow" onclick="closeSheet()">إلغاء</button></div>`);
+  <div class="row" style="margin-top:16px"><button class="btn grow" onclick="saveW(${id})">حفظ</button><button class="btn sec grow" onclick="closeSheet()">إلغاء</button></div>
+  ${id ? `<hr><button class="btn full red" onclick="delWorker(${id})">حذف العامل نهائياً</button>
+  <div class="muted" style="margin-top:6px">إن كان له سجل حضور فالأفضل إلغاء خانة «فعّال» وحفظ، فيختفي من القوائم ويبقى في تقارير الفترات السابقة.</div>` : ''}`);
+}
+function delWorker(id) {
+  act(async () => {
+    const w = S.workers.find(x => x.id === id), h = await api(`/api/workers/${id}/history`);
+    const msg = (h.att || h.adv)
+      ? `«${w.name}» لديه ${h.att} يوم حضور و ${h.adv} سلفة مسجلة.\nالحذف يمسح هذه السجلات نهائياً ويغيّر تقارير الفترات السابقة.\nالأفضل تعطيله بدل حذفه.\n\nهل تريد الحذف النهائي؟`
+      : `حذف «${w.name}» نهائياً؟`;
+    if (!confirm(msg)) return;
+    await api('/api/workers/' + id, { method: 'DELETE' });
+    S.dirty = true; closeSheet(); toast('تم حذف العامل');
+  });
 }
 function saveW(id) {
   act(async () => {
@@ -403,28 +416,27 @@ async function onRestoreFile(inp) {
   });
   inp.value = '';
 }
-async function settingsSheet() {
+async function vSettings() {
   const s = await api('/api/settings');
-  openSheet(`<h3>الإعدادات</h3>
-  <div class="card" style="margin:10px 0"><b>${esc(LIC.n)}</b>
+  view.innerHTML = `<div class="card"><b>${esc(LIC.n)}</b>
   <div class="muted">الترخيص: ${LIC.e ? 'حتى ' + esc(LIC.e) : 'دائم'}</div>
   <div class="muted">رمز الجهاز: <span dir="ltr">${esc(fmtDev(DEVICE))}</span></div></div>
-  <label>تجديد الترخيص (الصق رمز التجديد الذي أرسله لك المزوّد)</label>
+  <div class="card"><label style="margin-top:0">تجديد الترخيص (الصق رمز التجديد الذي أرسله لك المزوّد)</label>
   <textarea id="renew" spellcheck="false" style="height:70px;direction:ltr;font-size:12px" placeholder="رمز التجديد"></textarea>
-  <div style="margin-top:8px"><button class="btn full sec" onclick="doRenew()">تطبيق رمز التجديد</button></div>
-  <label>معامل الساعة الإضافية (الساعة = الأجر ÷ 8 × المعامل)</label>
+  <div style="margin-top:8px"><button class="btn full sec" onclick="doRenew()">تطبيق رمز التجديد</button></div></div>
+  <div class="card"><label style="margin-top:0">معامل الساعة الإضافية (الساعة = الأجر ÷ 8 × المعامل)</label>
   <input id="s_f" type="number" inputmode="decimal" step="0.1" min="0" value="${esc(s.overtime_factor)}">
-  <div style="margin-top:10px"><button class="btn full" onclick="saveSet()">حفظ</button></div>
-  <hr><b>النسخ الاحتياطي</b>
+  <div style="margin-top:10px"><button class="btn full" onclick="saveSet()">حفظ</button></div></div>
+  <div class="card"><b>النسخ الاحتياطي</b>
   <div class="muted">بياناتك محفوظة على هذا الجوال فقط، احفظ نسخة بشكل دوري وأرسلها لنفسك (واتساب / Drive).</div>
   <div class="row" style="margin-top:8px"><button class="btn grow" onclick="doBackup()">حفظ نسخة</button><button class="btn sec grow" onclick="pickRestore()">استعادة نسخة</button></div>
   <input type="file" id="rf" class="hidden" accept=".json,application/json" onchange="onRestoreFile(this)">
   ${S.installEv ? '<div style="margin-top:12px"><button class="btn full sec" onclick="installApp()">تثبيت التطبيق على الشاشة الرئيسية</button></div>' : ''}
-  <div class="muted" style="margin-top:14px">الإصدار ${APP_VERSION}</div>
-  <div style="margin-top:10px"><button class="btn full sec" onclick="closeSheet()">إغلاق</button></div>`);
+  </div>
+  <div class="muted center" style="margin-top:6px">الإصدار ${APP_VERSION}</div>`;
 }
-function doRenew() { act(async () => { await applyRenewal($('#renew').value); S.dirty = true; closeSheet(); toast('تم تحديث الترخيص ✓'); }); }
-function saveSet() { act(async () => { await api('/api/settings', { method: 'POST', body: { overtime_factor: $('#s_f').value } }); S.dirty = true; closeSheet(); toast('تم الحفظ ✓'); }); }
-async function installApp() { if (!S.installEv) return; S.installEv.prompt(); await S.installEv.userChoice.catch(() => {}); S.installEv = null; closeSheet(); }
+function doRenew() { act(async () => { await applyRenewal($('#renew').value); await render(); toast('تم تحديث الترخيص ✓'); }); }
+function saveSet() { act(async () => { await api('/api/settings', { method: 'POST', body: { overtime_factor: $('#s_f').value } }); toast('تم الحفظ ✓'); }); }
+async function installApp() { if (!S.installEv) return; S.installEv.prompt(); await S.installEv.userChoice.catch(() => {}); S.installEv = null; render(); }
 
 boot();

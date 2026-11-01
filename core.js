@@ -96,6 +96,23 @@ async function updWorker(id, b) {
   await idbBatch([['workers', 'put', n]]); M.workers[M.workers.indexOf(old)] = n; return { ok: true };
 }
 
+const workerHistory = id => ({ att: [...ATT.values()].filter(a => a.worker_id === id).length, adv: M.advances.filter(a => a.worker_id === id).length });
+/* حذف نهائي: العامل مع تكليفاته وحضوره وسلفه (معاملة واحدة: كلها أو لا شيء) */
+async function deleteWorker(id) {
+  if (!M.workers.find(w => w.id === id)) fail('غير موجود');
+  const ops = [['workers', 'delete', id]];
+  M.assignments.filter(a => a.worker_id === id).forEach(a => ops.push(['assignments', 'delete', a.id]));
+  M.advances.filter(a => a.worker_id === id).forEach(a => ops.push(['advances', 'delete', a.id]));
+  const ks = [...ATT.values()].filter(a => a.worker_id === id).map(a => a.k);
+  ks.forEach(k => ops.push(['attendance', 'delete', k]));
+  await idbBatch(ops);
+  M.workers = M.workers.filter(w => w.id !== id);
+  M.assignments = M.assignments.filter(a => a.worker_id !== id);
+  M.advances = M.advances.filter(a => a.worker_id !== id);
+  ks.forEach(k => ATT.delete(k));
+  return { ok: true };
+}
+
 /* ---------------- المواقع ---------------- */
 const listSites = all => M.sites.filter(s => all || s.active).sort((a, b) => (b.active - a.active) || byName(a, b)).map(s => ({ ...s }));
 function siteFields(b) {
@@ -266,6 +283,8 @@ async function api(path, opts) {
   if (p === '/api/settings') return method === 'GET' ? { overtime_factor: factor() } : saveSettings(b);
   if (p === '/api/workers') return method === 'GET' ? listWorkers(q.all === '1') : addWorker(b);
   if ((m = p.match(/^\/api\/workers\/(\d+)$/)) && method === 'PUT') return updWorker(+m[1], b);
+  if ((m = p.match(/^\/api\/workers\/(\d+)$/)) && method === 'DELETE') return deleteWorker(+m[1]);
+  if ((m = p.match(/^\/api\/workers\/(\d+)\/history$/))) return workerHistory(+m[1]);
   if (p === '/api/sites') return method === 'GET' ? listSites(q.all === '1') : addSite(b);
   if ((m = p.match(/^\/api\/sites\/(\d+)$/)) && method === 'PUT') return updSite(+m[1], b);
   if ((m = p.match(/^\/api\/sites\/(\d+)\/needs$/))) return method === 'GET' ? listNeeds(+m[1]) : setNeed(+m[1], b);
