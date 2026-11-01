@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ar" dir="rtl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#1b2433">
+<title>إدارة العملاء والتراخيص</title>
+<link rel="stylesheet" href="style.css">
+<style>
+header{background:#1b2433}
+textarea{direction:ltr;font-size:13px;font-family:ui-monospace,Menlo,monospace;height:90px}
+.pub{height:70px}
+.tag.amb{background:#fff3d6;color:#9a6700}
+.cust .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.panel{background:var(--bg);border-radius:12px;padding:10px 12px;margin-top:10px}
+details>summary{cursor:pointer;font-weight:600}
+</style>
+</head><body>
+<header><h1>إدارة العملاء والتراخيص</h1></header>
+<main id="m"></main>
+<div id="toast"></div>
+<script>
+'use strict';
+const $=(s,r)=>(r||document).querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const B64={enc(u){let s='';u.forEach(b=>s+=String.fromCharCode(b));return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')},
+ dec(s){s=String(s).replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u}};
+const normDev=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+const fmtDev=c=>c.replace(/(.{4})(?=.)/g,'$1-');
+const iso=d=>{const z=new Date(d.getTime()-d.getTimezoneOffset()*60000);return z.toISOString().slice(0,10)};
+const addDaysISO=(s,n)=>{const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10)};
+const daysLeft=(e,today)=>Math.round((Date.parse(e)-Date.parse(today))/864e5);
+const ALG={name:'ECDSA',namedCurve:'P-256'};
+let toastT;function toast(m,bad){const t=$('#toast');t.textContent=m;t.className=bad?'bad':'';t.style.display='block';clearTimeout(toastT);toastT=setTimeout(()=>t.style.display='none',2800)}
+const ls={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){toast('تعذّر الحفظ في المتصفح',true)}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
+const getPriv=()=>{try{return JSON.parse(ls.get('issuer_priv'))}catch(e){return null}};
+const loadCus=()=>{try{const a=JSON.parse(ls.get('issuer_customers'));return Array.isArray(a)?a:[]}catch(e){return[]}};
+let CUS=loadCus();
+const saveCus=()=>ls.set('issuer_customers',JSON.stringify(CUS));
+const appUrl=()=>(ls.get('issuer_app')||location.href.replace(/issuer\.html.*$/,'')).replace(/#.*$/,'');
+function pubFromJwk(j){const x=B64.dec(j.x),y=B64.dec(j.y),u=new Uint8Array(65);u[0]=4;u.set(x,1);u.set(y,33);return B64.enc(u)}
+async function copy(t){try{await navigator.clipboard.writeText(t);toast('تم النسخ')}catch(e){toast('انسخ يدوياً',true)}}
+
+let KEYOPEN=false;   // يفتح قسم المفاتيح بعد الإنشاء ليظهر المفتاح العام
+let OPEN=null;       // id العميل الذي يظهر نموذج الإصدار تحته
+let RES=null;        // {id,code} آخر رمز صدر
+let Q='';            // نص البحث
+
+function status(c){
+  const today=iso(new Date());
+  if(!c.code)return{t:'بانتظار رمز الجهاز',cls:'',rank:1};
+  if(!c.e)return{t:'مفعّل — دائم',cls:'ok',rank:3};
+  if(c.e<today)return{t:'منتهي منذ '+c.e,cls:'bad',rank:0};
+  const left=daysLeft(c.e,today);
+  return{t:`ينتهي بعد ${left} يوم (${c.e})`,cls:left<=14?'amb':'ok',rank:left<=14?0:2};
+}
+
+function draw(){
+  const jwk=getPriv(),m=$('#m');
+  if(!window.crypto||!crypto.subtle){m.innerHTML='<div class="card warn">هذه الصفحة تعمل فقط عبر رابط HTTPS.</div>';return}
+  if(!jwk){
+    m.innerHTML=`<div class="card"><b>الخطوة الأولى: مفاتيح الإصدار</b>
+    <div class="muted">تُنشأ مرة واحدة فقط. المفتاح السري يبقى في متصفحك ولا يُرفع لأي مكان، وبه وحده تستطيع إصدار التراخيص.</div>
+    <div style="margin-top:12px"><button class="btn full" onclick="gen()">إنشاء مفاتيح جديدة</button></div></div>
+    <div class="card"><b>أو استيراد نسخة احتياطية سابقة</b>
+    <div class="muted">ملف النسخة الاحتياطية الكاملة (المفتاح السري + قائمة العملاء)</div>
+    <input type="file" id="impf" accept=".json,application/json" style="margin-top:8px" onchange="impFile(this)">
+    <textarea id="imp" placeholder="أو الصق محتوى الملف هنا" spellcheck="false" style="margin-top:8px"></textarea>
+    <div style="margin-top:10px"><button class="btn full sec" onclick="imp($('#imp').value)">استيراد</button></div></div>`;
+    return;
+  }
+  const pub=pubFromJwk(jwk);
+  m.innerHTML=`<div class="card"><b>إضافة عميل جديد</b>
+  <label>اسم الشركة / المكتب / المقاول (يظهر في تطبيقه ولا يستطيع تغييره)</label><input id="cn" maxlength="80">
+  <label>ملاحظة (اختياري: رقم هاتف، مدينة...)</label><input id="cx" maxlength="100">
+  <div style="margin-top:12px"><button class="btn full" onclick="addCus()">إضافة العميل</button></div></div>
+
+  <div class="row" style="margin:6px 4px 10px"><span class="muted">العملاء (${CUS.length})</span>
+  <button class="btn sm sec" onclick="exportKey()">حفظ نسخة احتياطية كاملة</button></div>
+  <input id="q" placeholder="بحث باسم العميل…" value="${esc(Q)}" oninput="Q=this.value;drawList()" style="margin-bottom:10px">
+  <div id="list"></div>
+
+  <details class="card" ${KEYOPEN?'open':''}><summary>الإعدادات والمفاتيح</summary>
+  <label>رابط التطبيق (يُستخدم في الرابط الجاهز للتفعيل)</label>
+  <input id="ap" dir="ltr" value="${esc(appUrl())}" onchange="ls.set('issuer_app',this.value.trim());toast('تم الحفظ')">
+  <hr><b>المفتاح العام</b>
+  <div class="muted">ضعه في ملف <b>config.js</b> داخل <code>PUBLIC_KEY</code> (مرة واحدة فقط).</div>
+  <textarea class="pub" id="pub" readonly>${esc(pub)}</textarea>
+  <div style="margin-top:8px"><button class="btn sm full" onclick="copy($('#pub').value)">نسخ المفتاح العام</button></div>
+  <div class="muted" style="margin-top:6px">زر «حفظ نسخة احتياطية كاملة» في أعلى قائمة العملاء يحفظ المفتاح السري وقائمة العملاء معاً. احفظ الملف في مكان آمن ولا تشاركه.</div>
+  <hr><button class="btn sm red" onclick="wipe()">حذف مفتاح الإصدار من هذا المتصفح</button>
+  <div class="muted" style="margin-top:6px">لا تفعل هذا قبل حفظ النسخة الاحتياطية، وإلا لن تستطيع إصدار تراخيص جديدة.</div></details>`;
+  drawList();
+}
+
+function drawList(){
+  const q=Q.trim().toLowerCase();
+  const list=CUS.filter(c=>!q||String(c.name).toLowerCase().includes(q)||String(c.note||'').toLowerCase().includes(q))
+    .sort((a,b)=>status(a).rank-status(b).rank||String(a.name).localeCompare(String(b.name),'ar'));
+  $('#list').innerHTML=list.length?list.map(card).join(''):`<div class="empty">${CUS.length?'لا توجد نتائج':'لا يوجد عملاء بعد. أضف أول عميل من الأعلى.'}</div>`;
+}
+
+function card(c){
+  const s=status(c),open=OPEN===c.id,res=RES&&RES.id===c.id?RES:null,today=iso(new Date());
+  let acts=`<button class="btn sm" onclick="openForm('${c.id}')">إصدار / تجديد</button>`;
+  if(c.code)acts+=`<button class="btn sm sec" onclick="showCode('${c.id}')">إعادة إرسال الرمز</button>`;
+  acts+=`<button class="btn sm red" onclick="delCus('${c.id}')">حذف</button>`;
+  let form='';
+  if(open){
+    const future=c.code&&c.e&&c.e>today,left=future?daysLeft(c.e,today):0;
+    form=`<div class="panel">
+    <label style="margin-top:0">رمز الجهاز (يرسله لك العميل من شاشة التفعيل)</label>
+    <input id="dv" dir="ltr" value="${esc(c.device?fmtDev(c.device):'')}" placeholder="XXXX-XXXX-XXXX" maxlength="16" style="text-align:center;font-size:20px;letter-spacing:2px">
+    ${c.device?'<div class="muted" style="margin-top:6px">لنقل العميل لجوال جديد غيّر الرمز أعلاه. تنبيه: لا يمكن إلغاء الرمز القديم عن بُعد، فيبقى يعمل على الجوال القديم حتى انتهاء ترخيصه، لذلك الأفضل مدد قصيرة (مثل سنة).</div>':''}
+    <label>مدة الترخيص بالأيام (فارغ = دائم)</label>
+    <input id="dy" type="number" inputmode="numeric" min="1" placeholder="مثال: 365">
+    ${future?`<label class="row" style="color:var(--tx);font-size:15px;margin-top:10px"><span>تمديد من تاريخ الانتهاء الحالي (${esc(c.e)}) بدل البدء من اليوم</span><input type="checkbox" id="ex" checked></label>
+    <button class="btn sm sec" style="margin-top:6px" onclick="$('#dy').value=${left};$('#ex').checked=false">نفس المتبقي (${left} يوم)</button>`:''}
+    <div class="row" style="margin-top:12px"><button class="btn grn grow" onclick="doIssue('${c.id}')">إصدار رمز التفعيل</button><button class="btn sec grow" onclick="OPEN=null;drawList()">إلغاء</button></div></div>`;
+  }
+  let out='';
+  if(res){
+    const msg=`تم تفعيل برنامج إدارة العمالة لـ ${c.name}.\nافتح هذا الرابط من نفس الجوال لإكمال التفعيل:\n${appUrl()}#activate=${res.code}`;
+    out=`<div class="panel"><b>رمز التفعيل</b><textarea id="out" readonly>${esc(res.code)}</textarea>
+    <div class="row" style="margin-top:8px"><button class="btn sm grow" onclick="copy($('#out').value)">نسخ الرمز</button>
+    <a class="btn sm grn grow" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">إرسال واتساب (رابط جاهز)</a></div>
+    <button class="btn sm sec full" style="margin-top:8px" onclick="RES=null;drawList()">إغلاق</button></div>`;
+  }
+  return `<div class="card cust"><div class="row"><b>${esc(c.name)}</b><span class="tag ${s.cls}">${esc(s.t)}</span></div>
+  ${c.note?`<div class="muted">${esc(c.note)}</div>`:''}
+  ${c.device?`<div class="muted" style="direction:ltr;text-align:right">${esc(fmtDev(c.device))}</div>`:''}
+  <div class="acts">${acts}</div>${form}${out}</div>`;
+}
+
+function addCus(){
+  const name=$('#cn').value.trim();if(!name)return toast('أدخل اسم العميل',true);
+  if(CUS.some(c=>c.name===name)&&!confirm('يوجد عميل بنفس الاسم. إضافة آخر؟'))return;
+  const c={id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),name,note:$('#cx').value.trim(),device:'',e:'',i:'',code:''};
+  CUS.push(c);saveCus();OPEN=c.id;RES=null;Q='';draw();toast('تمت الإضافة. الصق رمز جهازه لإصدار الرمز');
+}
+function openForm(id){OPEN=id;RES=null;drawList()}
+function showCode(id){RES={id,code:CUS.find(c=>c.id===id).code};OPEN=null;drawList()}
+function delCus(id){const c=CUS.find(x=>x.id===id);if(!confirm(`حذف «${c.name}» من القائمة؟\nلن يتوقف تطبيقه إن كان مفعّلاً (الترخيص موجود على جواله).`))return;CUS=CUS.filter(x=>x.id!==id);saveCus();if(OPEN===id)OPEN=null;if(RES&&RES.id===id)RES=null;draw()}
+
+async function sign(name,dev,e,i){
+  const key=await crypto.subtle.importKey('jwk',getPriv(),ALG,false,['sign']);
+  const pay=new TextEncoder().encode(JSON.stringify({p:'labor1',n:name,d:dev,e,i}));
+  const sig=new Uint8Array(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},key,pay));
+  return B64.enc(pay)+'.'+B64.enc(sig);
+}
+async function doIssue(id){
+  try{
+    const c=CUS.find(x=>x.id===id),today=iso(new Date());
+    const dev=normDev($('#dv').value);
+    if(dev.length!==12)throw new Error('رمز الجهاز يجب أن يكون 12 خانة');
+    const raw=$('#dy').value.trim(),days=parseInt(raw,10);
+    if(raw&&!(days>0))throw new Error('المدة غير صحيحة');
+    let e='';
+    if(raw){const ex=$('#ex');const base=(ex&&ex.checked&&c.e&&c.e>today)?c.e:today;e=addDaysISO(base,days)}
+    const code=await sign(c.name,dev,e,today);
+    Object.assign(c,{device:dev,e,i:today,code});saveCus();
+    RES={id,code};OPEN=null;drawList();toast('تم الإصدار ✓');
+  }catch(err){toast(err.message,true)}
+}
+
+async function gen(){
+  const kp=await crypto.subtle.generateKey(ALG,true,['sign','verify']);
+  ls.set('issuer_priv',JSON.stringify(await crypto.subtle.exportKey('jwk',kp.privateKey)));
+  KEYOPEN=true;draw();toast('تم إنشاء المفاتيح. انسخ المفتاح العام واحفظ نسخة احتياطية الآن');
+}
+async function imp(text){
+  try{
+    const o=JSON.parse(text),key=o.kty?o:o.key;
+    await crypto.subtle.importKey('jwk',key,ALG,false,['sign']);
+    ls.set('issuer_priv',JSON.stringify(key));
+    if(Array.isArray(o.customers)){CUS=o.customers;saveCus()}
+    draw();toast('تم الاستيراد')
+  }catch(e){toast('الملف غير صالح',true)}
+}
+async function impFile(inp){const f=inp.files[0];if(f)imp(await f.text())}
+function exportKey(){
+  const b=new Blob([JSON.stringify({v:1,key:getPriv(),customers:CUS})],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='issuer-backup-KEEP-SECRET.json';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},4000);
+  toast('احفظ الملف في مكان آمن ولا تشاركه مع أحد');
+}
+function wipe(){if(confirm('حذف مفتاح الإصدار وقائمة العملاء من هذا المتصفح؟ تأكد أنك حفظت نسخة احتياطية.')&&confirm('تأكيد أخير: لن تستطيع إصدار تراخيص بدون المفتاح السري.')){ls.del('issuer_priv');ls.del('issuer_customers');CUS=[];OPEN=null;RES=null;draw()}}
+draw();
+</script></body></html>
