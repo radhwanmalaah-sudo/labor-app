@@ -2,5 +2,5 @@
    PUBLIC_KEY: المفتاح العام الذي تنسخه من صفحة issuer.html بعد إنشاء مفاتيحك (الخطوة 3 في README).
    لا تضع هنا المفتاح السري أبداً. */
 window.APP_CONFIG = {
-  PUBLIC_KEY: ""
+  PUBLIC_KEY: "BIafVm6uvHunB6owsvuaa4C9vtvvR-CZPf7BHVemQp66MwvVd8zfFm0Lac_vsZympjlADJcqqwgTv69W3KVDS3M"
 };
