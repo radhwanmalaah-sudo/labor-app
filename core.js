@@ -123,6 +123,7 @@ async function addSite(b) { const s = { ...siteFields(b), active: 1 }; await idb
 async function updSite(id, b) {
   const old = M.sites.find(s => s.id === id); if (!old) fail('غير موجود');
   const n = { ...old, ...siteFields(b), active: b.active === undefined ? old.active : (b.active ? 1 : 0) };
+  if (n.active) { n.delivered_on = ''; n.summary = null; }
   await idbBatch([['sites', 'put', n]]); M.sites[M.sites.indexOf(old)] = n; return { ok: true };
 }
 const listNeeds = sid => M.needs.filter(n => n.site_id === sid).sort((a, b) => String(a.trade).localeCompare(String(b.trade), 'ar')).map(n => ({ ...n }));
@@ -137,6 +138,52 @@ async function setNeed(sid, b) {
   return { ok: true };
 }
 async function delNeed(id) { await idbBatch([['needs', 'delete', id]]); M.needs = M.needs.filter(n => n.id !== id); return { ok: true }; }
+
+/* تسليم / إعادة فتح / حذف موقع */
+function siteStats(id) {
+  const rows = [...ATT.values()].filter(a => a.site_id === id && a.present);
+  const days = new Set(rows.map(a => a.day)), ws = new Set(rows.map(a => a.worker_id));
+  const ds = [...days].sort();
+  return { days: days.size, man_days: rows.length, workers: ws.size, cost: rows.reduce((t, a) => t + dayCost(a), 0), first: ds[0] || '', last: ds[ds.length - 1] || '' };
+}
+function siteDeliverInfo(id) {
+  const s = M.sites.find(x => x.id === id); if (!s) fail('غير موجود');
+  const day = todayISO();
+  const cur = M.assignments.filter(a => a.site_id === id && a.start_date <= day && (!a.end_date || a.end_date > day));
+  const names = [...new Set(cur.map(a => (M.workers.find(w => w.id === a.worker_id) || {}).name).filter(Boolean))];
+  return { assigned: names, stats: siteStats(id), attendance: [...ATT.values()].filter(a => a.site_id === id).length };
+}
+async function deliverSite(id, b) {
+  const old = M.sites.find(s => s.id === id); if (!old) fail('غير موجود');
+  const day = pday(b && b.day);
+  const ops = [], upd = new Map();
+  for (const a of M.assignments) if (a.site_id === id && !a.end_date) {
+    const n = a.start_date >= day ? { ...a, end_date: a.start_date + '' } : { ...a, end_date: day };
+    if (a.start_date >= day) { /* تكليف يبدأ اليوم أو لاحقاً: يُلغى */ ops.push(['assignments', 'delete', a.id]); upd.set(a.id, null); }
+    else { ops.push(['assignments', 'put', n]); upd.set(a.id, n); }
+  }
+  const n = { ...old, active: 0, delivered_on: day, summary: siteStats(id) };
+  ops.push(['sites', 'put', n]);
+  await idbBatch(ops);
+  M.assignments = M.assignments.filter(a => upd.get(a.id) !== null).map(a => upd.get(a.id) || a);
+  M.sites[M.sites.indexOf(old)] = n;
+  return { ok: true };
+}
+async function reopenSite(id) {
+  const old = M.sites.find(s => s.id === id); if (!old) fail('غير موجود');
+  const n = { ...old, active: 1, delivered_on: '', summary: null };
+  await idbBatch([['sites', 'put', n]]); M.sites[M.sites.indexOf(old)] = n; return { ok: true };
+}
+async function deleteSite(id) {
+  if (!M.sites.find(s => s.id === id)) fail('غير موجود');
+  if ([...ATT.values()].some(a => a.site_id === id)) fail('للموقع سجل حضور، لا يمكن حذفه. استخدم «تسليم الموقع» بدل الحذف.');
+  const ops = [['sites', 'delete', id]];
+  M.needs.filter(n => n.site_id === id).forEach(n => ops.push(['needs', 'delete', n.id]));
+  M.assignments.filter(a => a.site_id === id).forEach(a => ops.push(['assignments', 'delete', a.id]));
+  await idbBatch(ops);
+  M.sites = M.sites.filter(s => s.id !== id); M.needs = M.needs.filter(n => n.site_id !== id); M.assignments = M.assignments.filter(a => a.site_id !== id);
+  return { ok: true };
+}
 
 /* ---------------- التكليف ---------------- */
 async function assignWorkers(ids, siteId, day) {
@@ -287,6 +334,9 @@ async function api(path, opts) {
   if ((m = p.match(/^\/api\/workers\/(\d+)\/history$/))) return workerHistory(+m[1]);
   if (p === '/api/sites') return method === 'GET' ? listSites(q.all === '1') : addSite(b);
   if ((m = p.match(/^\/api\/sites\/(\d+)$/)) && method === 'PUT') return updSite(+m[1], b);
+  if ((m = p.match(/^\/api\/sites\/(\d+)$/)) && method === 'DELETE') return deleteSite(+m[1]);
+  if ((m = p.match(/^\/api\/sites\/(\d+)\/deliver$/))) return method === 'GET' ? siteDeliverInfo(+m[1]) : deliverSite(+m[1], b);
+  if ((m = p.match(/^\/api\/sites\/(\d+)\/reopen$/)) && method === 'POST') return reopenSite(+m[1]);
   if ((m = p.match(/^\/api\/sites\/(\d+)\/needs$/))) return method === 'GET' ? listNeeds(+m[1]) : setNeed(+m[1], b);
   if ((m = p.match(/^\/api\/needs\/(\d+)$/)) && method === 'DELETE') return delNeed(+m[1]);
   if (p === '/api/roster') { const day = pday(q.day), ro = roster(day); return { workers: ro, shortage: shortage(day, ro).filter(x => x.diff < 0) }; }

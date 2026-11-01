@@ -225,10 +225,11 @@ async function vData() {
   } else {
     S.sitesD = await api('/api/sites?all=1');
     if (!S.sitesD.length) h += '<div class="empty">لا توجد مواقع بعد.<br>اضغط + لإضافة أول موقع.</div>';
-    S.sitesD.forEach(s => {
-      h += `<div class="card item tap ${s.active ? '' : 'off'}" onclick="sSheet(${s.id})"><div class="row"><b>${esc(s.name)}</b>${s.active ? '' : '<span class="tag">معطّل</span>'}</div>
-    <div class="muted">${esc(s.project || '—')}${s.start_date ? ' · من ' + esc(s.start_date) : ''}${s.end_date ? ' إلى ' + esc(s.end_date) : ''}</div></div>`;
-    });
+    const card = s => `<div class="card item tap ${s.active ? '' : 'off'}" onclick="sSheet(${s.id})"><div class="row"><b>${esc(s.name)}</b>${s.delivered_on ? '<span class="tag ok">مسلَّم</span>' : s.active ? '' : '<span class="tag">معطّل</span>'}</div>
+    <div class="muted">${esc(s.project || '—')}${s.delivered_on ? ' · سُلّم في ' + esc(s.delivered_on) : (s.start_date ? ' · من ' + esc(s.start_date) : '') + (s.end_date ? ' إلى ' + esc(s.end_date) : '')}</div></div>`;
+    const open = S.sitesD.filter(s => !s.delivered_on), done = S.sitesD.filter(s => s.delivered_on);
+    open.forEach(s => h += card(s));
+    if (done.length) h += `<details style="margin-top:12px"><summary class="muted" style="padding:10px 4px;font-size:15px">مواقع مسلَّمة (${done.length})</summary>${done.map(card).join('')}</details>`;
     h += '<button class="fab" onclick="sSheet(0)">+</button>';
   }
   view.innerHTML = h;
@@ -272,11 +273,37 @@ function sSheet(id) {
   <label>المشروع</label><input id="f_proj" value="${esc(s.project)}" maxlength="80">
   <label>تاريخ البدء</label><input id="f_st" type="date" value="${esc(s.start_date)}">
   <label>تاريخ الانتهاء</label><input id="f_en" type="date" value="${esc(s.end_date)}">
-  ${id ? `<label class="row" style="color:var(--tx);font-size:16px"><span>فعّال</span><input type="checkbox" id="f_act" ${s.active ? 'checked' : ''}></label>` : ''}
+  ${id && !s.delivered_on ? `<label class="row" style="color:var(--tx);font-size:16px"><span>فعّال</span><input type="checkbox" id="f_act" ${s.active ? 'checked' : ''}></label>` : ''}
   <div class="row" style="margin-top:16px"><button class="btn grow" onclick="saveS(${id})">حفظ</button><button class="btn sec grow" onclick="closeSheet()">إلغاء</button></div>
-  ${id ? '<hr><b>احتياج الموقع من الكوادر</b><div id="needs"></div>' : ''}`);
+  ${id ? '<hr><b>احتياج الموقع من الكوادر</b><div id="needs"></div>' : ''}
+  ${id ? `<hr>${s.delivered_on ? siteSummaryHtml(s) + `<button class="btn full sec" style="margin-top:10px" onclick="reopenSiteUi(${id})">إعادة فتح الموقع</button>` : `<button class="btn full grn" onclick="deliverUi(${id})">✅ تسليم الموقع (إقفال)</button>`}
+  <button class="btn full red" style="margin-top:10px" onclick="delSiteUi(${id})">حذف الموقع نهائياً</button>
+  <div class="muted" style="margin-top:6px">الحذف للمواقع المُنشأة بالخطأ فقط، ولا يُسمح به إن كان للموقع سجل حضور.</div>` : ''}`);
   if (id) needsDraw(id);
 }
+function siteSummaryHtml(s) {
+  const m = s.summary || {};
+  return `<div class="card" style="margin:0"><b>ملخص التسليم</b>
+  <div class="row li"><span>تاريخ البدء (أول حضور)</span><b>${esc(m.first || s.start_date || '—')}</b></div>
+  <div class="row li"><span>تاريخ التسليم</span><b>${esc(s.delivered_on)}</b></div>
+  <div class="row li"><span>أيام العمل</span><b>${m.days || 0}</b></div>
+  <div class="row li"><span>عدد العمال</span><b>${m.workers || 0}</b></div>
+  <div class="row li"><span>إجمالي أيام العمل (عامل/يوم)</span><b>${m.man_days || 0}</b></div>
+  <div class="row li"><span>إجمالي الأجور</span><b>${fmt(m.cost || 0)}</b></div></div>`;
+}
+function deliverUi(id) {
+  act(async () => {
+    const i = await api(`/api/sites/${id}/deliver`), st = i.stats;
+    let msg = 'تسليم الموقع وإقفاله؟\nسيختفي من التكليف والحضور والصفحة الرئيسية، ويبقى في التقارير.';
+    if (i.assigned.length) msg += `\n\nالعمال المكلّفون به حالياً (${i.assigned.length}) سيُفكّ تكليفهم ويصبحون متاحين:\n` + i.assigned.slice(0, 12).join('، ') + (i.assigned.length > 12 ? ' ...' : '');
+    msg += `\n\nأيام العمل: ${st.days} · العمال: ${st.workers} · الأجور: ${fmt(st.cost)}`;
+    if (!confirm(msg)) return;
+    await api(`/api/sites/${id}/deliver`, { method: 'POST', body: { day: S.day } });
+    S.dirty = true; closeSheet(); toast('تم تسليم الموقع ✓');
+  });
+}
+function reopenSiteUi(id) { act(async () => { if (!confirm('إعادة فتح الموقع؟')) return; await api(`/api/sites/${id}/reopen`, { method: 'POST', body: {} }); S.dirty = true; closeSheet(); toast('أُعيد فتح الموقع'); }); }
+function delSiteUi(id) { act(async () => { if (!confirm('حذف الموقع نهائياً؟')) return; await api('/api/sites/' + id, { method: 'DELETE' }); S.dirty = true; closeSheet(); toast('تم حذف الموقع'); }); }
 function saveS(id) {
   act(async () => {
     const body = { name: $('#f_name').value, project: $('#f_proj').value, start_date: $('#f_st').value, end_date: $('#f_en').value };
